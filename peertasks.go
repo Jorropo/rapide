@@ -8,22 +8,25 @@ import (
 )
 
 type bitswapPeerTaskSet struct {
+	rapide *Rapide
+
 	lock sync.Mutex
 
-	tasks map[cid.Cid]ask
+	tasks []multiAsk
 
-	// if removed is true, the wantlist was empty and you need to add it back
-	removed bool
+	worklists uint64
+
+	self peer.ID
 }
 
-func (r *Rapide) askForMoreBlocks(p peer.ID, wanted []cidPriorityPair, callback callbackWithBlock) error {
-	pt, _ := r.bitswapPeerTasks.LoadOrStore(p, &bitswapPeerTaskSet{})
+func (r *Rapide) getNewWorklistForPeer(p peer.ID) *worklist {
+	pt, _ := r.bitswapPeerTasks.LoadOrStore(p, &bitswapPeerTaskSet{rapide: r, self: p})
 
 tryPt:
 	pt.lock.Lock()
 
 	// did we finished while we were taking the lock ?
-	if pt.removed {
+	if pt.worklists == 0 {
 		newPt, loaded := r.bitswapPeerTasks.LoadOrStore(p, pt)
 		if loaded {
 			// someone else already made a new pt
@@ -32,26 +35,63 @@ tryPt:
 			goto tryPt
 		}
 	}
+	pt.worklists++
 
-	blocksToGet := make([]cid.Cid, len(wanted))
-	var newBlocks int
-	for _, want := range wanted {
-		ask, alreadyAsked := pt.tasks[want.cid]
-		if alreadyAsked {
-			if ask.priority > want.priority {
-
-			}
-		}
+	return &worklist{
+		peer: pt,
 	}
 }
 
-type cidPriorityPair struct {
-	cid      cid.Cid
+type multiAsk struct {
+	cid cid.Cid
+
+	// worklists is sorted by priority
+	worklists []multiAskWorklistItem
+}
+
+type multiAskWorklistItem struct {
+	worklist *worklist
 	priority uint32
 }
 
 type ask struct {
+	cid      cid.Cid
 	priority uint32
+}
 
-	callbacks []callbackWithBlock
+type worklist struct {
+	peer *bitswapPeerTaskSet
+
+	asks []ask
+}
+
+func (w *worklist) stop() {
+	pt := w.peer
+	pt.lock.Lock()
+	defer pt.lock.Unlock()
+
+	if pt.worklists == 1 {
+		// fast path for when we are the last worklist
+		pt.rapide.bitswapPeerTasks.Delete(pt.self)
+		pt.worklists = 0
+		pt.tasks = nil // don't keep the capacity to avoid holding a reference to the items and worklist
+		return
+	}
+
+	var j int
+	for _, a := range w.asks {
+		for a.cid != pt.tasks[j].cid {
+			j++
+		}
+
+		for i, item := range pt.tasks[j].worklists {
+			if comparePointers(w, item.worklist) {
+				pt.tasks[j].worklists = removeItem(pt.tasks[j].worklists, i)
+				goto afterWorklistRemove
+			}
+		}
+		panic("worklist not found in pt.tasks[j]")
+	afterWorklistRemove:
+	}
+	pt.worklists--
 }

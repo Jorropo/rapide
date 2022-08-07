@@ -20,7 +20,6 @@ type request struct {
 }
 
 func (r *request) start(root cid.Cid, future SelectorFuture, hints []peer.ID) {
-
 }
 
 // done is like wg.Done but following the event loop
