@@ -12,9 +12,11 @@ type bitswapPeerTaskSet struct {
 
 	lock sync.Mutex
 
-	tasks []multiAsk
+	worklists []*worklist
+	tasks     []multiAsk
 
-	worklists uint64
+	touched         uint64
+	lastTouchedSent uint64
 
 	self peer.ID
 }
@@ -26,7 +28,7 @@ tryPt:
 	pt.lock.Lock()
 
 	// did we finished while we were taking the lock ?
-	if pt.worklists == 0 {
+	if len(pt.worklists) == 0 {
 		newPt, loaded := r.bitswapPeerTasks.LoadOrStore(p, pt)
 		if loaded {
 			// someone else already made a new pt
@@ -35,11 +37,14 @@ tryPt:
 			goto tryPt
 		}
 	}
-	pt.worklists++
 
-	return &worklist{
+	w := &worklist{
 		peer: pt,
 	}
+
+	pt.worklists = append(pt.worklists, w)
+
+	return w
 }
 
 type multiAsk struct {
@@ -70,28 +75,71 @@ func (w *worklist) stop() {
 	pt.lock.Lock()
 	defer pt.lock.Unlock()
 
-	if pt.worklists == 1 {
+	var needToSendFull bool
+	if len(pt.worklists) == 1 {
 		// fast path for when we are the last worklist
 		pt.rapide.bitswapPeerTasks.Delete(pt.self)
-		pt.worklists = 0
+		pt.worklists = nil
+		needToSendFull = len(pt.tasks) != 0
 		pt.tasks = nil // don't keep the capacity to avoid holding a reference to the items and worklist
+	} else {
+		var c int
+		var j int
+		tasks := pt.tasks
+	AsksLoop:
+		for _, a := range w.asks {
+			for a.cid != tasks[j].cid {
+				tasks[c] = tasks[j]
+				j++
+				c++
+			}
+
+			for i, item := range tasks[j].worklists {
+				if comparePointers(w, item.worklist) {
+					if len(tasks[j].worklists) > 1 {
+						// an other worklist is waiting on that item let's keep it and remove us from the worklists
+						tasks[j].worklists = removeItem(tasks[j].worklists, i)
+						c++
+					}
+					j++
+					continue AsksLoop
+				}
+			}
+			panic("worklist not found in tasks[j]")
+		}
+		if j != c {
+			// copy remaining unscanned items
+			c += copy(tasks[c:], tasks[j:])
+			// memclr unused part of tasks to avoid holding references
+			for i := range pt.tasks[c:] {
+				tasks[i] = multiAsk{}
+			}
+			pt.tasks = tasks[:c]
+			needToSendFull = true
+		}
+		for i, z := range pt.worklists {
+			if comparePointers(w, z) {
+				pt.worklists = removeItem(pt.worklists, i)
+				goto WorklistRemoved
+			}
+		}
+		panic("worklist not found in pt.worklists")
+	WorklistRemoved:
+	}
+
+	if needToSendFull {
+		pt.touched++
+		go pt.sendFull()
+	}
+}
+
+func (pt *bitswapPeerTaskSet) sendFull() {
+	pt.lock.Lock()
+	defer pt.lock.Unlock()
+
+	if pt.touched == pt.lastTouchedSent {
 		return
 	}
 
-	var j int
-	for _, a := range w.asks {
-		for a.cid != pt.tasks[j].cid {
-			j++
-		}
-
-		for i, item := range pt.tasks[j].worklists {
-			if comparePointers(w, item.worklist) {
-				pt.tasks[j].worklists = removeItem(pt.tasks[j].worklists, i)
-				goto afterWorklistRemove
-			}
-		}
-		panic("worklist not found in pt.tasks[j]")
-	afterWorklistRemove:
-	}
-	pt.worklists--
+	panic("not implemented")
 }

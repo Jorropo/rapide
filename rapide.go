@@ -1,7 +1,12 @@
 package rapide
 
 import (
+	"context"
+
+	"github.com/Jorropo/rapide/internal"
 	"github.com/libp2p/go-libp2p-core/peer"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ipfs/go-bitswap/network"
 	blocks "github.com/ipfs/go-block-format"
@@ -24,17 +29,23 @@ const returnChannelBufferSize = 256
 
 // Get tries to download all blocks found under a selector.
 // It runs async, the channel is closed when the request is finished.
-// It also return a cancel function instead of using context, that because I choose
+// It also return a cancel function instead  using the context, that because I choose
 // to write an event loop instead of using goroutines. I know go's scheduler is so good
 // I am supposed to just use goroutines, but my brain made more sense of the event loop
 // version so I use an event loop OK ? This most probably saves lots of ram cuz I use 1 or 2 pointers
 // where goroutines would need multiple channels and stacks. No I havn't benchmarked that claim.
 // The cancel function is synchronous and waits until it is fully closed to return.
-func (r *Rapide) Get(root cid.Cid, future SelectorFuture, hints ...peer.ID) (<-chan MaybeBlock, func()) {
+// The context will be used to pass around tracing information to the blockstore.
+func (r *Rapide) Get(ctx context.Context, root cid.Cid, future SelectorFuture, hints ...peer.ID) (<-chan MaybeBlock, func()) {
+	ctx, ctxCancel := context.WithCancel(ctx)
+	ctx, span := internal.StartSpan(ctx, "GetBlock", trace.WithAttributes(attribute.String("Key", root.String())))
 	c := make(chan MaybeBlock, returnChannelBufferSize)
-	req := request{
-		rapide:  r,
-		results: c,
+	req := &request{
+		rapide:    r,
+		results:   c,
+		ctx:       ctx,
+		ctxCancel: ctxCancel,
+		span:      span,
 	}
 	go req.start(root, future, hints)
 	return c, req.cancel
