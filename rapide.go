@@ -4,16 +4,19 @@ import (
 	"context"
 
 	"github.com/Jorropo/rapide/internal"
-	"github.com/libp2p/go-libp2p-core/peer"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ipfs/go-bitswap/network"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
+	"github.com/ipfs/go-ipfs-blockstore"
+	"github.com/libp2p/go-libp2p-core/peer"
 
+	"github.com/ipld/go-ipld-prime/codec"
 	"github.com/ipld/go-ipld-prime/datamodel"
 	"github.com/ipld/go-ipld-prime/traversal/selector"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	// FIXME: remove import once sync.MapOf is added to std
 	gmap "github.com/SaveTheRbtz/generic-sync-map-go"
@@ -23,20 +26,18 @@ var _ network.Receiver = (*Rapide)(nil)
 
 type Rapide struct {
 	bitswapPeerTasks gmap.MapOf[peer.ID, *bitswapPeerTaskSet]
+
+	blockstore blockstore.Blockstore
+
+	nodeLoader codec.Decoder
 }
 
 const returnChannelBufferSize = 256
 
 // Get tries to download all blocks found under a selector.
 // It runs async, the channel is closed when the request is finished.
-// It also return a cancel function instead  using the context, that because I choose
-// to write an event loop instead of using goroutines. I know go's scheduler is so good
-// I am supposed to just use goroutines, but my brain made more sense of the event loop
-// version so I use an event loop OK ? This most probably saves lots of ram cuz I use 1 or 2 pointers
-// where goroutines would need multiple channels and stacks. No I havn't benchmarked that claim.
-// The cancel function is synchronous and waits until it is fully closed to return.
-// The context will be used to pass around tracing information to the blockstore.
-func (r *Rapide) Get(ctx context.Context, root cid.Cid, future SelectorFuture, hints ...peer.ID) (<-chan MaybeBlock, func()) {
+// The context will be used to pass around tracing information to the blockstore and for cancellation.
+func (r *Rapide) Get(ctx context.Context, root cid.Cid, future SelectorFuture, hints ...peer.ID) <-chan MaybeBlock {
 	ctx, ctxCancel := context.WithCancel(ctx)
 	ctx, span := internal.StartSpan(ctx, "GetBlock", trace.WithAttributes(attribute.String("Key", root.String())))
 	c := make(chan MaybeBlock, returnChannelBufferSize)
@@ -47,14 +48,12 @@ func (r *Rapide) Get(ctx context.Context, root cid.Cid, future SelectorFuture, h
 		ctxCancel: ctxCancel,
 		span:      span,
 	}
+	go req.contextWatchDog()
 	go req.start(root, future, hints)
-	return c, req.cancel
+	return c
 }
 
 type MaybeBlock struct {
-	// Key is always set to the corresponding value found in the traversal
-	Key cid.Cid
-
 	// Err indicates and error, if it is set the block was not received.
 	Err error
 

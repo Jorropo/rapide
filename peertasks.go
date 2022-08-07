@@ -65,7 +65,7 @@ type worklist struct {
 	asks []cid.Cid
 }
 
-func (w *worklist) stop() {
+func (w *worklist) stopWithoutGraphCleanup() {
 	pt := w.peer
 	pt.lock.Lock()
 	defer pt.lock.Unlock()
