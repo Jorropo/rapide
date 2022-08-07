@@ -59,15 +59,10 @@ type multiAskWorklistItem struct {
 	priority uint32
 }
 
-type ask struct {
-	cid      cid.Cid
-	priority uint32
-}
-
 type worklist struct {
 	peer *bitswapPeerTaskSet
 
-	asks []ask
+	asks []cid.Cid
 }
 
 func (w *worklist) stop() {
@@ -88,7 +83,7 @@ func (w *worklist) stop() {
 		tasks := pt.tasks
 	AsksLoop:
 		for _, a := range w.asks {
-			for a.cid != tasks[j].cid {
+			for a != tasks[j].cid {
 				tasks[c] = tasks[j]
 				j++
 				c++
