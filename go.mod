@@ -3,6 +3,7 @@ module github.com/Jorropo/rapide
 go 1.18
 
 require (
+	github.com/SaveTheRbtz/generic-sync-map-go v0.0.0-20220414055132-a37292614db8 // indirect
 	github.com/benbjohnson/clock v1.1.0 // indirect
 	github.com/btcsuite/btcd v0.21.0-beta // indirect
 	github.com/cskr/pubsub v1.0.2 // indirect
